@@ -30,7 +30,10 @@ public sealed class MainWindow : Window
     private static readonly TimeSpan HeatSoakExitAverageDuration = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan RunningFanSnapshotMinInterval = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan StoppedFanSnapshotMinInterval = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan FanWriteMinInterval = TimeSpan.FromMilliseconds(1500);
+    private static readonly TimeSpan FanWriteMinInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan FanWriteUrgentMinInterval = TimeSpan.FromMilliseconds(1500);
+    private const int FanWriteMinDeltaRpm = 300;
+    private const int FanWriteUrgentDeltaRpm = 800;
 
     private readonly FanController _fanController = new();
     private TemperatureReader? _temperatureReader;
@@ -110,6 +113,7 @@ public sealed class MainWindow : Window
     private bool _fanWriteInProgress;
     private readonly SemaphoreSlim _fanIoLock = new(1, 1);
     private FanTargets? _lastTarget;
+    private FanTargets? _lastAppliedTarget;
     private FanTargets? _queuedTarget;
     private int _fanMinRpm = 1500;
     private int _fanMaxRpm = 5500;
@@ -294,20 +298,26 @@ public sealed class MainWindow : Window
                 ClampForCurrentRange(Math.Max(cpuFan2Target, gpuFan2Target)));
             var target = ApplyRampDown(rawTarget, profile.RampDownRpmPerSecond);
 
-            if (_running && target != _lastTarget)
+            if (_running)
             {
-                var previousTarget = _lastTarget;
-                _lastTarget = target;
                 var now = DateTimeOffset.Now;
-                if (previousTarget is null || target.Fan1Rpm != previousTarget.Fan1Rpm)
-                    _lastFan1TargetTime = now;
-                if (previousTarget is null || target.Fan2Rpm != previousTarget.Fan2Rpm)
-                    _lastFan2TargetTime = now;
-                QueueTargetApply(target);
+                if (target != _lastTarget)
+                {
+                    var previousTarget = _lastTarget;
+                    _lastTarget = target;
+                    if (previousTarget is null || target.Fan1Rpm != previousTarget.Fan1Rpm)
+                        _lastFan1TargetTime = now;
+                    if (previousTarget is null || target.Fan2Rpm != previousTarget.Fan2Rpm)
+                        _lastFan2TargetTime = now;
+                }
+
+                if (target != _lastAppliedTarget && ShouldQueueFanTarget(target, now))
+                    QueueTargetApply(target);
             }
             if (!_running)
             {
                 _lastTarget = null;
+                _lastAppliedTarget = null;
                 _lastFan1TargetTime = null;
                 _lastFan2TargetTime = null;
                 _queuedTarget = null;
@@ -403,6 +413,23 @@ public sealed class MainWindow : Window
             _ = ApplyQueuedTargetsAsync();
     }
 
+    private bool ShouldQueueFanTarget(FanTargets target, DateTimeOffset now)
+    {
+        if (_lastAppliedTarget is not FanTargets appliedTarget)
+            return true;
+
+        var fan1Delta = target.Fan1Rpm - appliedTarget.Fan1Rpm;
+        var fan2Delta = target.Fan2Rpm - appliedTarget.Fan2Rpm;
+        var maxIncrease = Math.Max(fan1Delta, fan2Delta);
+        var maxDelta = Math.Max(Math.Abs(fan1Delta), Math.Abs(fan2Delta));
+        var minInterval = maxIncrease >= FanWriteUrgentDeltaRpm ? FanWriteUrgentMinInterval : FanWriteMinInterval;
+
+        if (maxDelta < FanWriteMinDeltaRpm && _lastFanWriteTime is DateTimeOffset lastSmallWriteTime && now - lastSmallWriteTime < FanWriteMinInterval)
+            return false;
+
+        return _lastFanWriteTime is not DateTimeOffset lastFanWriteTime || now - lastFanWriteTime >= minInterval;
+    }
+
     private async Task ApplyQueuedTargetsAsync()
     {
         _fanWriteInProgress = true;
@@ -420,10 +447,14 @@ public sealed class MainWindow : Window
                         break;
                 }
 
+                if (_lastTarget is FanTargets latestTarget)
+                    target = latestTarget;
+
                 await _fanIoLock.WaitAsync();
                 try
                 {
                     await Task.Run(() => _fanController.Apply(target.Fan1Rpm, target.Fan2Rpm));
+                    _lastAppliedTarget = target;
                     _lastFanWriteTime = DateTimeOffset.Now;
                 }
                 finally
@@ -437,6 +468,7 @@ public sealed class MainWindow : Window
             _running = false;
             _queuedTarget = null;
             _lastTarget = null;
+            _lastAppliedTarget = null;
             _lastFan1TargetTime = null;
             _lastFan2TargetTime = null;
             _startButton.Content = T("Start");
@@ -825,6 +857,7 @@ public sealed class MainWindow : Window
         _running = true;
         SetResumeFanControlOnNextStart(true);
         _lastTarget = null;
+        _lastAppliedTarget = null;
         _lastFan1TargetTime = null;
         _lastFan2TargetTime = null;
         _lastFanWriteTime = null;
@@ -842,6 +875,7 @@ public sealed class MainWindow : Window
     {
         _running = false;
         _lastTarget = null;
+        _lastAppliedTarget = null;
         _lastFan1TargetTime = null;
         _lastFan2TargetTime = null;
         _queuedTarget = null;
@@ -911,6 +945,7 @@ public sealed class MainWindow : Window
         _running = false;
         _queuedTarget = null;
         _lastTarget = null;
+        _lastAppliedTarget = null;
         _lastFan1TargetTime = null;
         _lastFan2TargetTime = null;
         await RestoreAutoWithLockAsync();
