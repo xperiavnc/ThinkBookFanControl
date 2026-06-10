@@ -1,6 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Security;
+using System.Security.Principal;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -18,6 +23,7 @@ namespace ThinkBookFanControl;
 
 public sealed class MainWindow : Window
 {
+    private const string StartupTaskName = "ThinkBookFanControl";
     private const double HeatSoakEnterTempC = 75;
     private const double HeatSoakExitTempC = 65;
     private static readonly TimeSpan HeatSoakDuration = TimeSpan.FromSeconds(60);
@@ -549,27 +555,127 @@ public sealed class MainWindow : Window
 
     private void ApplyStartupSetting()
     {
-        const string runKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-        const string valueName = "ThinkBookFanControl";
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(runKeyPath, writable: true);
-            if (key is null)
-                return;
-
-            var executablePath = Environment.ProcessPath;
-            if (string.IsNullOrWhiteSpace(executablePath))
-                return;
+            DeleteLegacyStartupRunEntry();
 
             if (_settings.StartWithWindows)
-                key.SetValue(valueName, $"\"{executablePath}\"");
+                CreateStartupTask();
             else
-                key.DeleteValue(valueName, throwOnMissingValue: false);
+                DeleteStartupTask();
         }
         catch (Exception ex)
         {
             _statusText.Text = ex.Message;
         }
+    }
+
+    private static void DeleteLegacyStartupRunEntry()
+    {
+        const string runKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        using var key = Registry.CurrentUser.OpenSubKey(runKeyPath, writable: true);
+        key?.DeleteValue(StartupTaskName, throwOnMissingValue: false);
+    }
+
+    private static void CreateStartupTask()
+    {
+        var executablePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executablePath))
+            throw new InvalidOperationException("Cannot determine executable path for startup task.");
+
+        var xmlPath = Path.Combine(Path.GetTempPath(), StartupTaskName + ".xml");
+        try
+        {
+            File.WriteAllText(xmlPath, BuildStartupTaskXml(executablePath), Encoding.Unicode);
+            RunSchtasks(false, "/Create", "/TN", StartupTaskName, "/XML", xmlPath, "/F");
+        }
+        finally
+        {
+            try { File.Delete(xmlPath); } catch { }
+        }
+    }
+
+    private static void DeleteStartupTask()
+    {
+        RunSchtasks(true, "/Delete", "/TN", StartupTaskName, "/F");
+    }
+
+    private static string BuildStartupTaskXml(string executablePath)
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var sid = identity.User?.Value;
+        if (string.IsNullOrWhiteSpace(sid))
+            throw new InvalidOperationException("Cannot determine current user SID for startup task.");
+
+        var escapedSid = SecurityElement.Escape(sid);
+        var escapedPath = SecurityElement.Escape(executablePath);
+        return $"""
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>{escapedSid}</Author>
+    <Description>Start ThinkBook Fan Control at user logon.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{escapedSid}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{escapedSid}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escapedPath}</Command>
+    </Exec>
+  </Actions>
+</Task>
+""";
+    }
+
+    private static void RunSchtasks(bool ignoreFailure, params string[] arguments)
+    {
+        var startInfo = new ProcessStartInfo("schtasks.exe")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        foreach (var argument in arguments)
+            startInfo.ArgumentList.Add(argument);
+
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start schtasks.exe.");
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        if (!ignoreFailure && process.ExitCode != 0)
+            throw new InvalidOperationException($"schtasks.exe failed with exit code {process.ExitCode}. {output} {error}".Trim());
     }
 
     private void UpdateFanRange(IReadOnlyDictionary<string, FanLimit> limits)
