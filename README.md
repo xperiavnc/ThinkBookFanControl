@@ -6,9 +6,14 @@ Experimental fan-curve controller for Lenovo ThinkBook 16p G6 IAX.
 
 ## Disclaimer
 
-This project is not affiliated with, endorsed by, or supported by Lenovo.
-It is an independent experimental tool. Fan control can affect system cooling,
-hardware reliability, and data safety. Use it at your own risk.
+This project is not affiliated with Lenovo.
+This project is not an official Lenovo project.
+This project is not endorsed, supported, or sponsored by Lenovo.
+This project is an independent experimental tool.
+This tool controls fan speeds through Lenovo WMI interfaces and may affect
+system cooling, hardware stability, hardware lifespan, and data safety.
+Use this project at your own risk; you are solely responsible for any
+consequences arising from its use.
 
 The app is a C# WPF desktop program that reads temperatures through
 LibreHardwareMonitor and controls the two fans through Lenovo WMI methods.
