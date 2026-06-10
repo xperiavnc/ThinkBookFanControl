@@ -171,6 +171,9 @@ public sealed class MainWindow : Window
         StateChanged += (_, _) => OnStateChanged();
         Closing += OnClosing;
         Closed += (_, _) => OnClosed();
+
+        if (_settings.FanControlWasRunning)
+            Dispatcher.BeginInvoke(new Action(async () => await ResumeFanControlAsync()));
     }
 
     private UIElement BuildLayout()
@@ -320,7 +323,12 @@ public sealed class MainWindow : Window
                 _running = false;
                 _startButton.Content = T("Start");
                 _queuedTarget = null;
-                try { await RestoreAutoWithLockAsync(); } catch { }
+                try
+                {
+                    await RestoreAutoWithLockAsync();
+                    SetFanControlWasRunning(false);
+                }
+                catch { }
             }
             _statusText.Text = T("MonitorError") + ": " + ex.GetType().Name + ": " + ex.Message;
         }
@@ -765,7 +773,23 @@ public sealed class MainWindow : Window
         }
 
         SaveCurrentProfile();
+        StartFanControl();
+    }
+
+    private async Task ResumeFanControlAsync()
+    {
+        if (_running)
+            return;
+
+        StartFanControl();
+        _statusText.Text = T("ControllerResumed");
+        await SampleAsync(force: true);
+    }
+
+    private void StartFanControl()
+    {
         _running = true;
+        SetFanControlWasRunning(true);
         _lastTarget = null;
         _lastFan1TargetTime = null;
         _lastFan2TargetTime = null;
@@ -792,6 +816,7 @@ public sealed class MainWindow : Window
         try
         {
             await RestoreAutoWithLockAsync();
+            SetFanControlWasRunning(false);
             _startButton.Content = T("Start");
             _statusText.Text = T("AutoRestored");
         }
@@ -816,7 +841,11 @@ public sealed class MainWindow : Window
             try
             {
                 _fanIoLock.Wait();
-                try { _fanController.RestoreAuto(); }
+                try
+                {
+                    _fanController.RestoreAuto();
+                    SetFanControlWasRunning(false);
+                }
                 finally { _fanIoLock.Release(); }
             }
             catch { }
@@ -851,6 +880,16 @@ public sealed class MainWindow : Window
         _lastFan1TargetTime = null;
         _lastFan2TargetTime = null;
         await RestoreAutoWithLockAsync();
+        SetFanControlWasRunning(false);
+    }
+
+    private void SetFanControlWasRunning(bool value)
+    {
+        if (_settings.FanControlWasRunning == value)
+            return;
+
+        _settings.FanControlWasRunning = value;
+        CurveProfileStore.SaveSettings(_settings);
     }
 
     private TemperatureSnapshot ReadTemperatures()
@@ -1117,6 +1156,7 @@ public sealed class MainWindow : Window
             "Off" => "\u5173",
             "Saved" => "\u5df2\u4fdd\u5b58",
             "ControllerEnabled" => "\u98ce\u6247\u63a7\u5236\u5df2\u542f\u7528",
+            "ControllerResumed" => "\u5df2\u6062\u590d\u4e0a\u6b21\u672a\u505c\u6b62\u7684\u98ce\u6247\u63a7\u5236",
             "RestoringAuto" => "\u6b63\u5728\u6062\u590d\u81ea\u52a8\u98ce\u6247\u63a7\u5236...",
             "AutoRestored" => "\u5df2\u6062\u590d\u81ea\u52a8\u98ce\u6247\u63a7\u5236",
             "RestoreAutoFailed" => "\u6062\u590d\u81ea\u52a8\u5931\u8d25",
@@ -1147,6 +1187,7 @@ public sealed class MainWindow : Window
             "Stopping" => "Stopping...",
             "HeatSoak" => "Heat soak",
             "ControllerEnabled" => "Controller enabled",
+            "ControllerResumed" => "Resumed previously active fan control",
             "RestoringAuto" => "Restoring automatic fan control...",
             "AutoRestored" => "Automatic fan control restored",
             "RestoreAutoFailed" => "Restore auto failed",
