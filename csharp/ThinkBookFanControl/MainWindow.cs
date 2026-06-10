@@ -28,6 +28,9 @@ public sealed class MainWindow : Window
     private const double HeatSoakExitTempC = 65;
     private static readonly TimeSpan HeatSoakDuration = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan HeatSoakExitAverageDuration = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RunningFanSnapshotMinInterval = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan StoppedFanSnapshotMinInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan FanWriteMinInterval = TimeSpan.FromMilliseconds(1500);
 
     private readonly FanController _fanController = new();
     private TemperatureReader? _temperatureReader;
@@ -115,6 +118,8 @@ public sealed class MainWindow : Window
     private double? _smoothedGpuTempC;
     private DateTimeOffset? _lastFan1TargetTime;
     private DateTimeOffset? _lastFan2TargetTime;
+    private DateTimeOffset? _lastFanSnapshotTime;
+    private DateTimeOffset? _lastFanWriteTime;
     private DateTimeOffset? _highTempSince;
     private bool _heatSoaked;
     private readonly Queue<(DateTimeOffset Timestamp, double TempC)> _heatSoakExitSamples = [];
@@ -348,6 +353,12 @@ public sealed class MainWindow : Window
         if (_fanSnapshotSampling)
             return;
 
+        var now = DateTimeOffset.Now;
+        var minInterval = _running ? RunningFanSnapshotMinInterval : StoppedFanSnapshotMinInterval;
+        if (!force && _lastFanSnapshotTime is DateTimeOffset lastSnapshotTime && now - lastSnapshotTime < minInterval)
+            return;
+
+        _lastFanSnapshotTime = now;
         _fanSnapshotSampling = true;
         try
         {
@@ -400,10 +411,20 @@ public sealed class MainWindow : Window
             while (_running && _queuedTarget is FanTargets target)
             {
                 _queuedTarget = null;
+                if (_lastFanWriteTime is DateTimeOffset lastFanWriteTime)
+                {
+                    var delay = FanWriteMinInterval - (DateTimeOffset.Now - lastFanWriteTime);
+                    if (delay > TimeSpan.Zero)
+                        await Task.Delay(delay);
+                    if (!_running)
+                        break;
+                }
+
                 await _fanIoLock.WaitAsync();
                 try
                 {
                     await Task.Run(() => _fanController.Apply(target.Fan1Rpm, target.Fan2Rpm));
+                    _lastFanWriteTime = DateTimeOffset.Now;
                 }
                 finally
                 {
@@ -447,7 +468,7 @@ public sealed class MainWindow : Window
     private async Task RefreshTrayMenuAsync()
     {
         if (_trayMenu?.Visible == true)
-            await SampleAsync(force: true);
+            await SampleAsync();
 
         UpdateTrayMenuMetrics();
         UpdateTrayText();
@@ -806,6 +827,7 @@ public sealed class MainWindow : Window
         _lastTarget = null;
         _lastFan1TargetTime = null;
         _lastFan2TargetTime = null;
+        _lastFanWriteTime = null;
         _smoothedCpuTempC = null;
         _smoothedGpuTempC = null;
         _highTempSince = null;
