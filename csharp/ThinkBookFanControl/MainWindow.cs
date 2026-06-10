@@ -32,12 +32,10 @@ public sealed class MainWindow : Window
     private static readonly TimeSpan StoppedFanSnapshotMinInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan FanWriteMinInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan FanWriteUrgentMinInterval = TimeSpan.FromMilliseconds(1500);
-    private static readonly TimeSpan BrightnessFanWriteQuietPeriod = TimeSpan.FromSeconds(2);
     private const int FanWriteMinDeltaRpm = 300;
     private const int FanWriteUrgentDeltaRpm = 800;
 
     private readonly FanController _fanController = new();
-    private readonly BrightnessActivityMonitor _brightnessActivityMonitor = new();
     private TemperatureReader? _temperatureReader;
     private readonly DispatcherTimer _timer = new();
     private readonly DispatcherTimer _trayMenuTimer = new();
@@ -417,9 +415,6 @@ public sealed class MainWindow : Window
 
     private bool ShouldQueueFanTarget(FanTargets target, DateTimeOffset now)
     {
-        if (_brightnessActivityMonitor.IsActive(BrightnessFanWriteQuietPeriod))
-            return false;
-
         if (_lastAppliedTarget is not FanTargets appliedTarget)
             return true;
 
@@ -455,10 +450,6 @@ public sealed class MainWindow : Window
                 if (_lastTarget is FanTargets latestTarget)
                     target = latestTarget;
 
-                await WaitForBrightnessQuietAsync();
-                if (!_running)
-                    break;
-
                 await _fanIoLock.WaitAsync();
                 try
                 {
@@ -488,15 +479,6 @@ public sealed class MainWindow : Window
             _fanWriteInProgress = false;
             if (_running && _queuedTarget is not null)
                 _ = ApplyQueuedTargetsAsync();
-        }
-    }
-
-    private async Task WaitForBrightnessQuietAsync()
-    {
-        while (_running && _brightnessActivityMonitor.IsActive(BrightnessFanWriteQuietPeriod))
-        {
-            var delay = _brightnessActivityMonitor.RemainingQuietDelay(BrightnessFanWriteQuietPeriod);
-            await Task.Delay(delay > TimeSpan.Zero ? delay : TimeSpan.FromMilliseconds(100));
         }
     }
 
@@ -937,7 +919,6 @@ public sealed class MainWindow : Window
             catch { }
         }
         _temperatureReader?.Dispose();
-        _brightnessActivityMonitor.Dispose();
         if (_trayIcon is not null)
         {
             _trayIcon.Visible = false;
