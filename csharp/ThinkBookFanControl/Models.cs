@@ -45,6 +45,7 @@ public sealed class AppSettings
     public bool ResumeFanControlOnNextStart { get; set; }
     public bool FanControlWasRunning { get; set; }
     public bool StartWithWindows { get; set; }
+    public bool StartToTray { get; set; }
     public bool MinimizeToTray { get; set; }
     public bool CloseToTray { get; set; }
 }

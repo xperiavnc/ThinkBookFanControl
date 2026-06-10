@@ -1,6 +1,7 @@
 using System;
 using System.Reflection;
 using System.IO;
+using System.Linq;
 using System.Windows;
 
 namespace ThinkBookFanControl;
@@ -10,7 +11,7 @@ public static class Program
     private const string LenovoLegionToolkitDir = @"C:\Program Files\LenovoLegionToolkit";
 
     [STAThread]
-    public static void Main()
+    public static void Main(string[] args)
     {
         try
         {
@@ -27,7 +28,8 @@ public static class Program
                 MessageBox.Show(args.Exception.ToString(), "ThinkBook Fan Control error", MessageBoxButton.OK, MessageBoxImage.Error);
                 args.Handled = true;
             };
-            app.Run(new MainWindow());
+            var startToTrayRequested = args.Any(arg => string.Equals(arg, "--startup-tray", StringComparison.OrdinalIgnoreCase));
+            app.Run(new MainWindow(startToTrayRequested));
         }
         catch (Exception ex)
         {

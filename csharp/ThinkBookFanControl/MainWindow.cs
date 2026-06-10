@@ -63,6 +63,7 @@ public sealed class MainWindow : Window
     private readonly Button _refreshButton = new() { MinWidth = 76, Margin = new Thickness(0, 0, 6, 0) };
     private readonly CheckBox _syncFanSpeedsCheck = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
     private readonly CheckBox _startupCheck = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(14, 0, 10, 0) };
+    private readonly CheckBox _startToTrayCheck = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
     private readonly CheckBox _minimizeToTrayCheck = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
     private readonly CheckBox _closeToTrayCheck = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
 
@@ -122,7 +123,7 @@ public sealed class MainWindow : Window
     private List<int> _gpuFan1Curve;
     private List<int> _gpuFan2Curve;
 
-    public MainWindow()
+    public MainWindow(bool startToTrayRequested = false)
     {
         Title = "ThinkBook Fan Control";
         Width = 1220;
@@ -171,6 +172,9 @@ public sealed class MainWindow : Window
         StateChanged += (_, _) => OnStateChanged();
         Closing += OnClosing;
         Closed += (_, _) => OnClosed();
+
+        if (startToTrayRequested && _settings.StartWithWindows && _settings.StartToTray)
+            Loaded += (_, _) => HideWindowToTray();
 
         if (_settings.ResumeFanControlOnNextStart)
             Dispatcher.BeginInvoke(new Action(async () => await ResumeFanControlAsync()));
@@ -250,6 +254,7 @@ public sealed class MainWindow : Window
         row3.Children.Add(_startButton);
 
         row3.Children.Add(_startupCheck);
+        row3.Children.Add(_startToTrayCheck);
         row3.Children.Add(_minimizeToTrayCheck);
         row3.Children.Add(_closeToTrayCheck);
         panel.Children.Add(row3);
@@ -513,14 +518,21 @@ public sealed class MainWindow : Window
     private void ShowWindowFromTray()
     {
         Show();
+        ShowInTaskbar = true;
         WindowState = WindowState.Normal;
         Activate();
+    }
+
+    private void HideWindowToTray()
+    {
+        ShowInTaskbar = false;
+        Hide();
     }
 
     private void OnStateChanged()
     {
         if (WindowState == WindowState.Minimized && _settings.MinimizeToTray)
-            Hide();
+            HideWindowToTray();
     }
 
     private async void OnClosing(object? sender, CancelEventArgs e)
@@ -528,7 +540,7 @@ public sealed class MainWindow : Window
         if (_settings.CloseToTray && !_exitRequested)
         {
             e.Cancel = true;
-            Hide();
+            HideWindowToTray();
             return;
         }
 
@@ -568,7 +580,7 @@ public sealed class MainWindow : Window
             DeleteLegacyStartupRunEntry();
 
             if (_settings.StartWithWindows)
-                CreateStartupTask();
+                CreateStartupTask(_settings.StartToTray);
             else
                 DeleteStartupTask();
         }
@@ -585,7 +597,7 @@ public sealed class MainWindow : Window
         key?.DeleteValue(StartupTaskName, throwOnMissingValue: false);
     }
 
-    private static void CreateStartupTask()
+    private static void CreateStartupTask(bool startToTray)
     {
         var executablePath = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(executablePath))
@@ -594,7 +606,7 @@ public sealed class MainWindow : Window
         var xmlPath = Path.Combine(Path.GetTempPath(), StartupTaskName + ".xml");
         try
         {
-            File.WriteAllText(xmlPath, BuildStartupTaskXml(executablePath), Encoding.Unicode);
+            File.WriteAllText(xmlPath, BuildStartupTaskXml(executablePath, startToTray), Encoding.Unicode);
             RunSchtasks(false, "/Create", "/TN", StartupTaskName, "/XML", xmlPath, "/F");
         }
         finally
@@ -608,7 +620,7 @@ public sealed class MainWindow : Window
         RunSchtasks(true, "/Delete", "/TN", StartupTaskName, "/F");
     }
 
-    private static string BuildStartupTaskXml(string executablePath)
+    private static string BuildStartupTaskXml(string executablePath, bool startToTray)
     {
         using var identity = WindowsIdentity.GetCurrent();
         var sid = identity.User?.Value;
@@ -617,6 +629,7 @@ public sealed class MainWindow : Window
 
         var escapedSid = SecurityElement.Escape(sid);
         var escapedPath = SecurityElement.Escape(executablePath);
+        var arguments = startToTray ? "      <Arguments>--startup-tray</Arguments>\r\n" : "";
         return $"""
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -659,7 +672,7 @@ public sealed class MainWindow : Window
   <Actions Context="Author">
     <Exec>
       <Command>{escapedPath}</Command>
-    </Exec>
+{arguments}    </Exec>
   </Actions>
 </Task>
 """;
@@ -1054,6 +1067,8 @@ public sealed class MainWindow : Window
         _syncFanSpeedsCheck.Unchecked += (_, _) => UpdateBooleanSetting("syncFanSpeeds", false);
         _startupCheck.Checked += (_, _) => UpdateBooleanSetting("startup", true);
         _startupCheck.Unchecked += (_, _) => UpdateBooleanSetting("startup", false);
+        _startToTrayCheck.Checked += (_, _) => UpdateBooleanSetting("startToTray", true);
+        _startToTrayCheck.Unchecked += (_, _) => UpdateBooleanSetting("startToTray", false);
         _minimizeToTrayCheck.Checked += (_, _) => UpdateBooleanSetting("minimizeToTray", true);
         _minimizeToTrayCheck.Unchecked += (_, _) => UpdateBooleanSetting("minimizeToTray", false);
         _closeToTrayCheck.Checked += (_, _) => UpdateBooleanSetting("closeToTray", true);
@@ -1069,6 +1084,7 @@ public sealed class MainWindow : Window
         _languageCombo.SelectedIndex = _settings.Language == "en-US" ? 1 : 0;
         _themeCombo.SelectedIndex = _settings.Theme == "dark" ? 1 : 0;
         _startupCheck.IsChecked = _settings.StartWithWindows;
+        _startToTrayCheck.IsChecked = _settings.StartToTray;
         _minimizeToTrayCheck.IsChecked = _settings.MinimizeToTray;
         _closeToTrayCheck.IsChecked = _settings.CloseToTray;
         _loadingSettings = false;
@@ -1083,6 +1099,10 @@ public sealed class MainWindow : Window
         {
             case "startup":
                 _settings.StartWithWindows = value;
+                ApplyStartupSetting();
+                break;
+            case "startToTray":
+                _settings.StartToTray = value;
                 ApplyStartupSetting();
                 break;
             case "minimizeToTray":
@@ -1164,6 +1184,7 @@ public sealed class MainWindow : Window
             "FanReadError" => "\u98ce\u6247\u8bfb\u53d6\u9519\u8bef",
             "FanWriteError" => "\u98ce\u6247\u5199\u5165\u9519\u8bef",
             "Startup" => "\u5f00\u673a\u81ea\u542f",
+            "StartToTray" => "\u542f\u52a8\u5230\u6258\u76d8",
             "MinimizeToTray" => "\u6700\u5c0f\u5316\u5230\u6258\u76d8",
             "CloseToTray" => "\u5173\u95ed\u65f6\u6700\u5c0f\u5316",
             "ShowWindow" => "\u663e\u793a\u7a97\u53e3",
@@ -1195,6 +1216,7 @@ public sealed class MainWindow : Window
             "FanReadError" => "Fan read error",
             "FanWriteError" => "Fan write error",
             "Startup" => "Start with Windows",
+            "StartToTray" => "Start to tray",
             "MinimizeToTray" => "Minimize to tray",
             "CloseToTray" => "Close to tray",
             "ShowWindow" => "Show window",
@@ -1226,6 +1248,7 @@ public sealed class MainWindow : Window
         _refreshButton.Content = T("Refresh");
         _syncFanSpeedsCheck.Content = T("SyncFanSpeeds");
         _startupCheck.Content = T("Startup");
+        _startToTrayCheck.Content = T("StartToTray");
         _minimizeToTrayCheck.Content = T("MinimizeToTray");
         _closeToTrayCheck.Content = T("CloseToTray");
         _startButton.Content = _running ? T("Stop") : T("Start");
@@ -1275,7 +1298,7 @@ public sealed class MainWindow : Window
 
         foreach (var label in _labels)
             label.Foreground = muted;
-        foreach (var checkBox in new[] { _syncFanSpeedsCheck, _startupCheck, _minimizeToTrayCheck, _closeToTrayCheck })
+        foreach (var checkBox in new[] { _syncFanSpeedsCheck, _startupCheck, _startToTrayCheck, _minimizeToTrayCheck, _closeToTrayCheck })
             checkBox.Foreground = muted;
         foreach (var value in new[] { _cpuTempText, _gpuTempText, _vramTempText, _fan1Text, _fan2Text, _targetText })
             value.Foreground = text;

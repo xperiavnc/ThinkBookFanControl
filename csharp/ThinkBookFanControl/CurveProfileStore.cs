@@ -100,6 +100,7 @@ public static class CurveProfileStore
             defaults.SyncFanSpeeds = loaded.SyncFanSpeeds;
             defaults.ResumeFanControlOnNextStart = loaded.ResumeFanControlOnNextStart || loaded.FanControlWasRunning;
             defaults.StartWithWindows = loaded.StartWithWindows;
+            defaults.StartToTray = loaded.StartToTray;
             defaults.MinimizeToTray = loaded.MinimizeToTray;
             defaults.CloseToTray = loaded.CloseToTray;
             return defaults;
