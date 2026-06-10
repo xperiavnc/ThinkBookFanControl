@@ -14,6 +14,9 @@ This tool controls fan speeds through Lenovo WMI interfaces and may affect
 system cooling, hardware stability, hardware lifespan, and data safety.
 Use this project at your own risk; you are solely responsible for any
 consequences arising from its use.
+By using this tool, you acknowledge that you fully understand the risks above
+and voluntarily accept all consequences.
+If you do not agree, stop using and uninstall this tool immediately.
 
 ## Project Overview
 
