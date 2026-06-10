@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -172,7 +172,7 @@ public sealed class MainWindow : Window
         Closing += OnClosing;
         Closed += (_, _) => OnClosed();
 
-        if (_settings.FanControlWasRunning)
+        if (_settings.ResumeFanControlOnNextStart)
             Dispatcher.BeginInvoke(new Action(async () => await ResumeFanControlAsync()));
     }
 
@@ -326,7 +326,7 @@ public sealed class MainWindow : Window
                 try
                 {
                     await RestoreAutoWithLockAsync();
-                    SetFanControlWasRunning(false);
+                    SetResumeFanControlOnNextStart(false);
                 }
                 catch { }
             }
@@ -789,7 +789,7 @@ public sealed class MainWindow : Window
     private void StartFanControl()
     {
         _running = true;
-        SetFanControlWasRunning(true);
+        SetResumeFanControlOnNextStart(true);
         _lastTarget = null;
         _lastFan1TargetTime = null;
         _lastFan2TargetTime = null;
@@ -816,7 +816,7 @@ public sealed class MainWindow : Window
         try
         {
             await RestoreAutoWithLockAsync();
-            SetFanControlWasRunning(false);
+            SetResumeFanControlOnNextStart(false);
             _startButton.Content = T("Start");
             _statusText.Text = T("AutoRestored");
         }
@@ -844,7 +844,6 @@ public sealed class MainWindow : Window
                 try
                 {
                     _fanController.RestoreAuto();
-                    SetFanControlWasRunning(false);
                 }
                 finally { _fanIoLock.Release(); }
             }
@@ -880,15 +879,14 @@ public sealed class MainWindow : Window
         _lastFan1TargetTime = null;
         _lastFan2TargetTime = null;
         await RestoreAutoWithLockAsync();
-        SetFanControlWasRunning(false);
     }
 
-    private void SetFanControlWasRunning(bool value)
+    private void SetResumeFanControlOnNextStart(bool value)
     {
-        if (_settings.FanControlWasRunning == value)
+        if (_settings.ResumeFanControlOnNextStart == value)
             return;
 
-        _settings.FanControlWasRunning = value;
+        _settings.ResumeFanControlOnNextStart = value;
         CurveProfileStore.SaveSettings(_settings);
     }
 
@@ -1399,3 +1397,4 @@ public sealed class MainWindow : Window
         return _profiles.Select((profile, index) => $"{index + 1}: {profile.Name}").ToList();
     }
 }
+

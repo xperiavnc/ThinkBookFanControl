@@ -98,7 +98,7 @@ public static class CurveProfileStore
             defaults.LastProfileIndex = Math.Max(0, Math.Min(ProfileCount - 1, loaded.LastProfileIndex));
             defaults.EditFan = loaded.EditFan == 2 ? 2 : 1;
             defaults.SyncFanSpeeds = loaded.SyncFanSpeeds;
-            defaults.FanControlWasRunning = loaded.FanControlWasRunning;
+            defaults.ResumeFanControlOnNextStart = loaded.ResumeFanControlOnNextStart || loaded.FanControlWasRunning;
             defaults.StartWithWindows = loaded.StartWithWindows;
             defaults.MinimizeToTray = loaded.MinimizeToTray;
             defaults.CloseToTray = loaded.CloseToTray;
