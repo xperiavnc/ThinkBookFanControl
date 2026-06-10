@@ -15,6 +15,8 @@ system cooling, hardware stability, hardware lifespan, and data safety.
 Use this project at your own risk; you are solely responsible for any
 consequences arising from its use.
 
+## Project Overview
+
 The app is a C# WPF desktop program that reads temperatures through
 LibreHardwareMonitor and controls the two fans through Lenovo WMI methods.
 
