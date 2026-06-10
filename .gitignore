@@ -1,0 +1,28 @@
+# Build outputs
+bin/
+obj/
+dist/
+.tmp/
+publish/
+
+# .NET local state
+.vs/
+*.user
+*.suo
+*.rsuser
+TestResults/
+
+# Editor/OS noise
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini
+
+# Logs and local artifacts
+*.log
+*.tmp
+
+# Keep the project-local LHM DLL because the C# app currently depends on it.
+*.dll
+!csharp/ThinkBookFanControl/lib/LibreHardwareMonitorLib.dll
