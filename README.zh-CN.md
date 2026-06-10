@@ -1,0 +1,58 @@
+# ThinkBook 风扇控制
+
+面向 Lenovo ThinkBook 16p G6 IAX 的实验性风扇曲线控制工具。
+
+[English README](README.md)
+
+## 免责声明
+
+本项目与联想公司无关，并非联想官方项目，也未获得联想公司的认可、支持或背书。
+
+本工具会通过 Lenovo WMI 接口直接控制风扇转速，可能影响散热、硬件稳定性、硬件寿命和数据安全。使用本项目产生的一切风险由使用者自行承担。
+
+## 项目简介
+
+这是一个 C# WPF 桌面程序。程序通过 LibreHardwareMonitor 读取 CPU、GPU、显存温度，并通过 Lenovo WMI 方法控制两个风扇。
+
+## 当前确认的硬件接口
+
+- WMI 命名空间：`root\wmi`
+- 方法类：`LENOVO_OTHER_METHOD`
+- 风扇 1 RPM / 目标转速 ID：`0x04030001`
+- 风扇 2 RPM / 目标转速 ID：`0x04030002`
+- 恢复自动控制的目标值：`0`
+- 风扇 RPM 范围来源：`LENOVO_FAN_TEST_DATA`
+
+## 功能
+
+- 显示 CPU/GPU/显存温度。
+- 显示风扇 1/风扇 2 转速。
+- CPU 和 GPU 分别设置风扇曲线。
+- 每个 CPU/GPU 曲线图中分别显示风扇 1 和风扇 2 两条曲线。
+- 可选择当前编辑风扇 1 或风扇 2。
+- 可勾选同步转速，拖动一个风扇曲线点时同步移动另一个风扇的对应点。
+- 支持 5 套配置文件。
+- 支持深色/浅色主题和中文/英文界面。
+- 支持托盘菜单、最小化到托盘、关闭时最小化、开机自启。
+- 退出程序前会先恢复固件自动风扇控制。
+
+## 安全说明
+
+本工具会直接写入 Lenovo 固件/WMI 风扇控制方法。目前仅针对上方硬件接口路径进行开发和测试。使用时请保持温度监控，并确认点击 `Stop` 后能够恢复自动风扇控制。
+
+运行程序需要管理员权限。
+
+## 构建
+
+在仓库根目录打开 PowerShell：
+
+```powershell
+.\scripts\build_csharp.ps1 -Configuration Release -Publish
+```
+
+脚本会在 `dist` 下生成两种发布目录：
+
+- `ThinkBookFanControl-win-x64`：自包含版本，不需要目标电脑预装 .NET 运行时。
+- `ThinkBookFanControl-win-x64-net9-runtime`：体积较小，需要目标电脑已安装 .NET 9 Desktop Runtime。
+
+更多构建说明见 [BUILDING.md](BUILDING.md)。
