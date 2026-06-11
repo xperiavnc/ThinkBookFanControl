@@ -28,8 +28,10 @@ public sealed class MainWindow : Window
     private const double HeatSoakExitTempC = 65;
     private static readonly TimeSpan HeatSoakDuration = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan HeatSoakExitAverageDuration = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan RunningFanSnapshotMinInterval = TimeSpan.FromSeconds(3);
-    private static readonly TimeSpan StoppedFanSnapshotMinInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan RunningFanSnapshotMinInterval = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan StoppedFanSnapshotMinInterval = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan IdleSampleMinInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan TrayMenuRefreshMinInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan FanWriteMinInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan FanWriteUrgentMinInterval = TimeSpan.FromMilliseconds(1500);
     private const int FanWriteMinDeltaRpm = 300;
@@ -58,7 +60,7 @@ public sealed class MainWindow : Window
 
     private readonly ComboBox _profileCombo = new() { Width = 150 };
     private readonly TextBox _nameBox = new() { Width = 130 };
-    private readonly ComboBox _intervalCombo = OptionCombo("1", "2", "5");
+    private readonly ComboBox _intervalCombo = OptionCombo("1", "2", "5", "10");
     private readonly ComboBox _smoothingCombo = OptionCombo("1", "2", "3", "5", "10");
     private readonly ComboBox _rampDownCombo = OptionCombo("10", "20", "50", "100", "inf");
     private readonly ComboBox _editFanCombo = OptionCombo("Fan 1", "Fan 2");
@@ -109,6 +111,7 @@ public sealed class MainWindow : Window
     private bool _closingAfterRestore;
     private bool _exitRestoreInProgress;
     private bool _temperatureSampling;
+    private bool _fanRangeSampling;
     private bool _fanSnapshotSampling;
     private bool _fanWriteInProgress;
     private readonly SemaphoreSlim _fanIoLock = new(1, 1);
@@ -276,18 +279,29 @@ public sealed class MainWindow : Window
         if (_temperatureSampling)
             return;
 
-        var profile = UiToProfile();
+        var temperatureSmoothing = SelectedNumber(_smoothingCombo, 3);
+        var rampDownRpmPerSecond = SelectedRampDown();
         SyncTimerIntervals();
 
         _temperatureSampling = true;
         try
         {
             var temps = await Task.Run(ReadTemperatures);
-            _ = RefreshFanSnapshotAsync(force);
+            if (_running)
+            {
+                if (!_fanRangeDetected)
+                    _ = RefreshFanLimitsAsync();
+                else if (force)
+                    _ = RefreshFanSnapshotAsync(force);
+            }
+            else
+            {
+                _ = RefreshFanSnapshotAsync(force);
+            }
             UpdateHeatSoak(temps);
 
-            _smoothedCpuTempC = SmoothTemperature(_smoothedCpuTempC, temps.CpuTempC, profile.TemperatureSmoothing);
-            _smoothedGpuTempC = SmoothTemperature(_smoothedGpuTempC, temps.GpuTempC, profile.TemperatureSmoothing);
+            _smoothedCpuTempC = SmoothTemperature(_smoothedCpuTempC, temps.CpuTempC, temperatureSmoothing);
+            _smoothedGpuTempC = SmoothTemperature(_smoothedGpuTempC, temps.GpuTempC, temperatureSmoothing);
 
             var cpuFan1Target = CurveProfileStore.Interpolate(CurveProfileStore.CpuTemps, _cpuFan1Curve, _smoothedCpuTempC);
             var gpuFan1Target = CurveProfileStore.Interpolate(CurveProfileStore.GpuTemps, _gpuFan1Curve, _smoothedGpuTempC);
@@ -296,7 +310,7 @@ public sealed class MainWindow : Window
             var rawTarget = new FanTargets(
                 ClampForCurrentRange(Math.Max(cpuFan1Target, gpuFan1Target)),
                 ClampForCurrentRange(Math.Max(cpuFan2Target, gpuFan2Target)));
-            var target = ApplyRampDown(rawTarget, profile.RampDownRpmPerSecond);
+            var target = ApplyRampDown(rawTarget, rampDownRpmPerSecond);
 
             if (_running)
             {
@@ -358,6 +372,39 @@ public sealed class MainWindow : Window
         }
     }
 
+    private async Task RefreshFanLimitsAsync()
+    {
+        if (_fanRangeDetected || _fanRangeSampling)
+            return;
+
+        _fanRangeSampling = true;
+        try
+        {
+            if (!await _fanIoLock.WaitAsync(0))
+                return;
+
+            IReadOnlyDictionary<string, FanLimit> limits;
+            try
+            {
+                limits = await Task.Run(() => _fanController.ReadLimits());
+            }
+            finally
+            {
+                _fanIoLock.Release();
+            }
+
+            UpdateFanRange(limits);
+        }
+        catch (Exception ex)
+        {
+            _statusText.Text = T("FanReadError") + ": " + ex.GetType().Name + ": " + ex.Message;
+        }
+        finally
+        {
+            _fanRangeSampling = false;
+        }
+    }
+
     private async Task RefreshFanSnapshotAsync(bool force = false)
     {
         if (_fanSnapshotSampling)
@@ -372,7 +419,9 @@ public sealed class MainWindow : Window
         _fanSnapshotSampling = true;
         try
         {
-            await _fanIoLock.WaitAsync();
+            if (!await _fanIoLock.WaitAsync(0))
+                return;
+
             FanSnapshot fans;
             try
             {
@@ -420,11 +469,10 @@ public sealed class MainWindow : Window
 
         var fan1Delta = target.Fan1Rpm - appliedTarget.Fan1Rpm;
         var fan2Delta = target.Fan2Rpm - appliedTarget.Fan2Rpm;
-        var maxIncrease = Math.Max(fan1Delta, fan2Delta);
         var maxDelta = Math.Max(Math.Abs(fan1Delta), Math.Abs(fan2Delta));
-        var minInterval = maxIncrease >= FanWriteUrgentDeltaRpm ? FanWriteUrgentMinInterval : FanWriteMinInterval;
+        var minInterval = FanWriteIntervalFor(target, appliedTarget);
 
-        if (maxDelta < FanWriteMinDeltaRpm && _lastFanWriteTime is DateTimeOffset lastSmallWriteTime && now - lastSmallWriteTime < FanWriteMinInterval)
+        if (maxDelta < FanWriteMinDeltaRpm)
             return false;
 
         return _lastFanWriteTime is not DateTimeOffset lastFanWriteTime || now - lastFanWriteTime >= minInterval;
@@ -440,7 +488,10 @@ public sealed class MainWindow : Window
                 _queuedTarget = null;
                 if (_lastFanWriteTime is DateTimeOffset lastFanWriteTime)
                 {
-                    var delay = FanWriteMinInterval - (DateTimeOffset.Now - lastFanWriteTime);
+                    var minInterval = _lastAppliedTarget is FanTargets appliedTarget
+                        ? FanWriteIntervalFor(target, appliedTarget)
+                        : FanWriteMinInterval;
+                    var delay = minInterval - (DateTimeOffset.Now - lastFanWriteTime);
                     if (delay > TimeSpan.Zero)
                         await Task.Delay(delay);
                     if (!_running)
@@ -482,6 +533,15 @@ public sealed class MainWindow : Window
         }
     }
 
+    private static TimeSpan FanWriteIntervalFor(FanTargets target, FanTargets appliedTarget)
+    {
+        var fan1Increase = target.Fan1Rpm - appliedTarget.Fan1Rpm;
+        var fan2Increase = target.Fan2Rpm - appliedTarget.Fan2Rpm;
+        return Math.Max(fan1Increase, fan2Increase) >= FanWriteUrgentDeltaRpm
+            ? FanWriteUrgentMinInterval
+            : FanWriteMinInterval;
+    }
+
     private void InitializeTrayIcon()
     {
         _trayMenu = new Forms.ContextMenuStrip();
@@ -492,18 +552,20 @@ public sealed class MainWindow : Window
             ContextMenuStrip = _trayMenu
         };
         _trayIcon.DoubleClick += (_, _) => ShowWindowFromTray();
-        _trayMenu.Opening += (_, _) => UpdateTrayMenu();
+        _trayMenu.Opening += (_, _) =>
+        {
+            UpdateTrayMenu();
+            _ = Dispatcher.BeginInvoke(new Action(async () => await SampleAsync()));
+        };
         UpdateTrayMenu();
         UpdateTrayText();
     }
 
-    private async Task RefreshTrayMenuAsync()
+    private Task RefreshTrayMenuAsync()
     {
-        if (_trayMenu?.Visible == true)
-            await SampleAsync();
-
         UpdateTrayMenuMetrics();
         UpdateTrayText();
+        return Task.CompletedTask;
     }
 
     private void UpdateTrayMenu()
@@ -840,6 +902,7 @@ public sealed class MainWindow : Window
 
         SaveCurrentProfile();
         StartFanControl();
+        await SampleAsync();
     }
 
     private async Task ResumeFanControlAsync()
@@ -849,7 +912,7 @@ public sealed class MainWindow : Window
 
         StartFanControl();
         _statusText.Text = T("ControllerResumed");
-        await SampleAsync(force: true);
+        await SampleAsync();
     }
 
     private void StartFanControl()
@@ -866,6 +929,7 @@ public sealed class MainWindow : Window
         _highTempSince = null;
         _heatSoaked = false;
         _heatSoakExitSamples.Clear();
+        SyncTimerIntervals();
         _startButton.Content = T("Stop");
         _statusText.Text = T("ControllerEnabled");
         UpdateTrayMenu();
@@ -879,6 +943,7 @@ public sealed class MainWindow : Window
         _lastFan1TargetTime = null;
         _lastFan2TargetTime = null;
         _queuedTarget = null;
+        SyncTimerIntervals();
         _startButton.IsEnabled = false;
         _startButton.Content = T("Stopping");
         _statusText.Text = T("RestoringAuto");
@@ -1188,9 +1253,14 @@ public sealed class MainWindow : Window
 
     private void SyncTimerIntervals()
     {
-        var interval = TimeSpan.FromSeconds(Math.Max(0.5, _settings.IntervalSeconds));
-        _timer.Interval = interval;
-        _trayMenuTimer.Interval = interval;
+        var selectedInterval = TimeSpan.FromSeconds(Math.Max(1, _settings.IntervalSeconds));
+        _timer.Interval = _running ? selectedInterval : MaxTimeSpan(selectedInterval, IdleSampleMinInterval);
+        _trayMenuTimer.Interval = MaxTimeSpan(selectedInterval, TrayMenuRefreshMinInterval);
+    }
+
+    private static TimeSpan MaxTimeSpan(TimeSpan left, TimeSpan right)
+    {
+        return left >= right ? left : right;
     }
 
     private bool IsChinese => _settings.Language != "en-US";

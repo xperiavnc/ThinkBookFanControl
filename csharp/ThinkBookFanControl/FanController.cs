@@ -11,14 +11,21 @@ public sealed class FanController
     private const uint Fan1Id = 0x04030001;
     private const uint Fan2Id = 0x04030002;
     private IReadOnlyDictionary<string, FanLimit>? _cachedLimits;
+    private ReadFeatureMode? _readFeatureMode;
+    private SetFeatureMode? _setFeatureMode;
 
     public FanSnapshot ReadSnapshot()
     {
-        using var other = GetActiveOtherMethod();
+        var limits = ReadLimits();
+        using var other = FindActiveOtherMethod();
         var fan1 = ReadFeatureValue(other, Fan1Id);
         var fan2 = ReadFeatureValue(other, Fan2Id);
-        var limits = _cachedLimits ??= ReadFanLimits();
         return new FanSnapshot(DateTimeOffset.Now, fan1, fan2, limits);
+    }
+
+    public IReadOnlyDictionary<string, FanLimit> ReadLimits()
+    {
+        return _cachedLimits ??= ReadFanLimits();
     }
 
     public void ApplyBoth(int rpm)
@@ -28,7 +35,7 @@ public sealed class FanController
 
     public void Apply(int fan1Rpm, int fan2Rpm)
     {
-        using var other = GetActiveOtherMethod();
+        using var other = FindActiveOtherMethod();
         SetFeatureValue(other, Fan1Id, fan1Rpm);
         SetFeatureValue(other, Fan2Id, fan2Rpm);
     }
@@ -52,13 +59,18 @@ public sealed class FanController
             Math.Min(limits["fan1"].MaxRpm, limits["fan2"].MaxRpm));
     }
 
-    private static ManagementObject GetActiveOtherMethod()
+    private static ManagementObject FindActiveOtherMethod()
     {
         using var searcher = new ManagementObjectSearcher(NamespacePath, "SELECT * FROM LENOVO_OTHER_METHOD");
-        foreach (ManagementObject item in searcher.Get())
+        using var results = searcher.Get();
+        foreach (ManagementObject item in results)
         {
             if (IsActive(item))
-                return item;
+            {
+                var activeItem = (ManagementObject)item.Clone();
+                item.Dispose();
+                return activeItem;
+            }
             item.Dispose();
         }
 
@@ -68,7 +80,8 @@ public sealed class FanController
     private static IReadOnlyDictionary<string, FanLimit> ReadFanLimits()
     {
         using var searcher = new ManagementObjectSearcher(NamespacePath, "SELECT * FROM LENOVO_FAN_TEST_DATA");
-        foreach (ManagementObject item in searcher.Get())
+        using var results = searcher.Get();
+        foreach (ManagementObject item in results)
         {
             using (item)
             {
@@ -92,81 +105,150 @@ public sealed class FanController
         throw new InvalidOperationException("No active LENOVO_FAN_TEST_DATA instance found.");
     }
 
-    private static int ReadFeatureValue(ManagementObject other, uint id)
+    private int ReadFeatureValue(ManagementObject other, uint id)
     {
         var errors = new List<string>();
 
-        try
+        if (_readFeatureMode is ReadFeatureMode cachedMode)
         {
-            var args = new object?[] { id, null };
-            other.InvokeMethod("GetFeatureValue", args);
-            if (args.Length > 1 && args[1] is not null)
-                return Convert.ToInt32(args[1]);
-            errors.Add("positional [id, out value] returned no out value");
-        }
-        catch (Exception ex)
-        {
-            errors.Add("positional [id, out value]: " + DescribeException(ex));
+            if (TryReadFeatureValue(other, id, cachedMode, out var cachedValue, out var cachedError))
+                return cachedValue;
+
+            errors.Add($"{DescribeReadMode(cachedMode)} cached: {cachedError}");
+            _readFeatureMode = null;
         }
 
-        try
+        foreach (var mode in Enum.GetValues<ReadFeatureMode>())
         {
-            var args = new object?[] { id };
-            var result = other.InvokeMethod("GetFeatureValue", args);
-            if (result is not null)
-                return Convert.ToInt32(result);
-            errors.Add("positional [id] returned null");
-        }
-        catch (Exception ex)
-        {
-            errors.Add("positional [id]: " + DescribeException(ex));
-        }
-
-        try
-        {
-            using var inParams = other.GetMethodParameters("GetFeatureValue");
-            SetParameter(inParams, ["Data", "Id", "ID", "FeatureId", "AttributeId"], id);
-            using var outParams = other.InvokeMethod("GetFeatureValue", inParams, null);
-            if (TryGetParameter(outParams, ["value", "Value", "Data"], out var value))
+            if (TryReadFeatureValue(other, id, mode, out var value, out var error))
+            {
+                _readFeatureMode = mode;
                 return Convert.ToInt32(value);
-            errors.Add("named parameters returned no value");
-        }
-        catch (Exception ex)
-        {
-            errors.Add("named parameters: " + DescribeException(ex));
+            }
+
+            errors.Add($"{DescribeReadMode(mode)}: {error}");
         }
 
         throw new InvalidOperationException($"GetFeatureValue(0x{id:X8}) failed. " + string.Join(" | ", errors));
     }
 
-    private static void SetFeatureValue(ManagementObject other, uint id, int value)
+    private void SetFeatureValue(ManagementObject other, uint id, int value)
     {
         var errors = new List<string>();
 
-        try
+        if (_setFeatureMode is SetFeatureMode cachedMode)
         {
-            other.InvokeMethod("SetFeatureValue", new object[] { id, unchecked((uint)value) });
-            return;
-        }
-        catch (Exception ex)
-        {
-            errors.Add("positional [id, value]: " + DescribeException(ex));
+            if (TrySetFeatureValue(other, id, value, cachedMode, out var cachedError))
+                return;
+
+            errors.Add($"{DescribeSetMode(cachedMode)} cached: {cachedError}");
+            _setFeatureMode = null;
         }
 
-        try
+        foreach (var mode in Enum.GetValues<SetFeatureMode>())
         {
-            using var inParams = other.GetMethodParameters("SetFeatureValue");
-            SetParameter(inParams, ["Data", "Id", "ID", "FeatureId", "AttributeId"], id);
-            SetParameter(inParams, ["Value", "value", "Data2"], unchecked((uint)value));
-            other.InvokeMethod("SetFeatureValue", inParams, null);
-            return;
-        }
-        catch (Exception ex)
-        {
-            errors.Add("named parameters: " + DescribeException(ex));
+            if (TrySetFeatureValue(other, id, value, mode, out var error))
+            {
+                _setFeatureMode = mode;
+                return;
+            }
+
+            errors.Add($"{DescribeSetMode(mode)}: {error}");
         }
 
         throw new InvalidOperationException($"SetFeatureValue(0x{id:X8}, {value}) failed. " + string.Join(" | ", errors));
+    }
+
+    private static bool TryReadFeatureValue(ManagementObject other, uint id, ReadFeatureMode mode, out int value, out string error)
+    {
+        value = 0;
+        try
+        {
+            switch (mode)
+            {
+                case ReadFeatureMode.PositionalOut:
+                {
+                    var args = new object?[] { id, null };
+                    other.InvokeMethod("GetFeatureValue", args);
+                    if (args.Length > 1 && args[1] is not null)
+                    {
+                        value = Convert.ToInt32(args[1]);
+                        error = "";
+                        return true;
+                    }
+
+                    error = "returned no out value";
+                    return false;
+                }
+                case ReadFeatureMode.PositionalReturn:
+                {
+                    var result = other.InvokeMethod("GetFeatureValue", new object?[] { id });
+                    if (result is not null)
+                    {
+                        value = Convert.ToInt32(result);
+                        error = "";
+                        return true;
+                    }
+
+                    error = "returned null";
+                    return false;
+                }
+                case ReadFeatureMode.Named:
+                {
+                    using var inParams = other.GetMethodParameters("GetFeatureValue");
+                    SetParameter(inParams, ["Data", "Id", "ID", "FeatureId", "AttributeId"], id);
+                    using var outParams = other.InvokeMethod("GetFeatureValue", inParams, null);
+                    if (TryGetParameter(outParams, ["value", "Value", "Data"], out var parameterValue))
+                    {
+                        value = Convert.ToInt32(parameterValue);
+                        error = "";
+                        return true;
+                    }
+
+                    error = "returned no value";
+                    return false;
+                }
+                default:
+                    error = "unknown mode";
+                    return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            error = DescribeException(ex);
+            return false;
+        }
+    }
+
+    private static bool TrySetFeatureValue(ManagementObject other, uint id, int value, SetFeatureMode mode, out string error)
+    {
+        try
+        {
+            switch (mode)
+            {
+                case SetFeatureMode.Positional:
+                    other.InvokeMethod("SetFeatureValue", new object[] { id, unchecked((uint)value) });
+                    error = "";
+                    return true;
+                case SetFeatureMode.Named:
+                    using (var inParams = other.GetMethodParameters("SetFeatureValue"))
+                    {
+                        SetParameter(inParams, ["Data", "Id", "ID", "FeatureId", "AttributeId"], id);
+                        SetParameter(inParams, ["Value", "value", "Data2"], unchecked((uint)value));
+                        other.InvokeMethod("SetFeatureValue", inParams, null);
+                    }
+                    error = "";
+                    return true;
+                default:
+                    error = "unknown mode";
+                    return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            error = DescribeException(ex);
+            return false;
+        }
     }
 
     private static void SetParameter(ManagementBaseObject parameters, string[] names, object value)
@@ -216,5 +298,39 @@ public sealed class FanController
         if (value is Array array)
             return array.Cast<object>().Select(Convert.ToInt32).ToArray();
         return [];
+    }
+
+    private static string DescribeReadMode(ReadFeatureMode mode)
+    {
+        return mode switch
+        {
+            ReadFeatureMode.PositionalOut => "positional [id, out value]",
+            ReadFeatureMode.PositionalReturn => "positional [id]",
+            ReadFeatureMode.Named => "named parameters",
+            _ => mode.ToString()
+        };
+    }
+
+    private static string DescribeSetMode(SetFeatureMode mode)
+    {
+        return mode switch
+        {
+            SetFeatureMode.Positional => "positional [id, value]",
+            SetFeatureMode.Named => "named parameters",
+            _ => mode.ToString()
+        };
+    }
+
+    private enum ReadFeatureMode
+    {
+        PositionalOut,
+        PositionalReturn,
+        Named
+    }
+
+    private enum SetFeatureMode
+    {
+        Positional,
+        Named
     }
 }

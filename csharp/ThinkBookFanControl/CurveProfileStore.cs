@@ -94,7 +94,7 @@ public static class CurveProfileStore
 
             defaults.Language = loaded.Language is "en-US" or "zh-CN" ? loaded.Language : defaults.Language;
             defaults.Theme = loaded.Theme is "dark" or "light" ? loaded.Theme : defaults.Theme;
-            defaults.IntervalSeconds = PickAllowed(loaded.IntervalSeconds, [1, 2, 5], defaults.IntervalSeconds);
+            defaults.IntervalSeconds = PickAllowed(loaded.IntervalSeconds, [1, 2, 5, 10], defaults.IntervalSeconds);
             defaults.LastProfileIndex = Math.Max(0, Math.Min(ProfileCount - 1, loaded.LastProfileIndex));
             defaults.EditFan = loaded.EditFan == 2 ? 2 : 1;
             defaults.SyncFanSpeeds = loaded.SyncFanSpeeds;

@@ -7,7 +7,10 @@ namespace ThinkBookFanControl;
 
 public sealed class TemperatureReader : IDisposable
 {
+    private static readonly TimeSpan SensorCacheRefreshInterval = TimeSpan.FromMinutes(1);
     private readonly Computer _computer;
+    private readonly List<TemperatureSensor> _sensors = [];
+    private DateTimeOffset _lastSensorCacheRefresh;
 
     public TemperatureReader()
     {
@@ -22,13 +25,12 @@ public sealed class TemperatureReader : IDisposable
 
     public TemperatureSnapshot Read()
     {
-        var sensors = new List<TemperatureSensor>();
-        foreach (var hardware in _computer.Hardware)
-            CollectHardware(hardware, "", sensors);
+        RefreshSensorCacheIfNeeded();
+        UpdateCachedHardware();
 
-        var cpu = PickCpuSensor(sensors);
-        var gpu = PickSensor(sensors, ["gpu core"]);
-        var vram = PickSensor(sensors, ["gpu memory junction", "memory junction", "gpu memory", "vram"]);
+        var cpu = PickCpuSensor(_sensors);
+        var gpu = PickSensor(_sensors, ["gpu core"]);
+        var vram = PickSensor(_sensors, ["gpu memory junction", "memory junction", "gpu memory", "vram"]);
         return new TemperatureSnapshot(
             cpu.Sensor?.ValueC,
             gpu.Sensor?.ValueC,
@@ -43,6 +45,28 @@ public sealed class TemperatureReader : IDisposable
         _computer.Close();
     }
 
+    private void RefreshSensorCacheIfNeeded()
+    {
+        var now = DateTimeOffset.Now;
+        if (_sensors.Count > 0 && now - _lastSensorCacheRefresh < SensorCacheRefreshInterval)
+            return;
+
+        _sensors.Clear();
+        foreach (var hardware in _computer.Hardware)
+            CollectHardware(hardware, "", _sensors);
+        _lastSensorCacheRefresh = now;
+    }
+
+    private void UpdateCachedHardware()
+    {
+        var updated = new HashSet<IHardware>();
+        foreach (var sensor in _sensors)
+        {
+            if (updated.Add(sensor.Hardware))
+                sensor.Hardware.Update();
+        }
+    }
+
     private static void CollectHardware(IHardware hardware, string path, List<TemperatureSensor> sensors)
     {
         hardware.Update();
@@ -53,11 +77,12 @@ public sealed class TemperatureReader : IDisposable
             if (sensor.SensorType == SensorType.Temperature && sensor.Value is not null)
             {
                 sensors.Add(new TemperatureSensor(
+                    sensor,
+                    hardware,
                     sensor.Name,
                     hardware.Name,
                     hardware.HardwareType,
-                    hardwarePath + "/" + sensor.Name,
-                    sensor.Value.Value));
+                    hardwarePath + "/" + sensor.Name));
             }
         }
 
@@ -68,9 +93,10 @@ public sealed class TemperatureReader : IDisposable
     private static (TemperatureSensor? Sensor, string Name) PickSensor(IEnumerable<TemperatureSensor> sensors, string[] patterns)
     {
         var selected = sensors
+            .Where(sensor => sensor.ValueC is not null)
             .Where(sensor => patterns.Any(pattern =>
                 (sensor.Name + " " + sensor.Identifier).Contains(pattern, StringComparison.OrdinalIgnoreCase)))
-            .OrderByDescending(sensor => sensor.ValueC)
+            .OrderByDescending(sensor => sensor.ValueC!.Value)
             .FirstOrDefault();
 
         return selected is null ? (null, "not found") : (selected, selected.Identifier);
@@ -87,6 +113,7 @@ public sealed class TemperatureReader : IDisposable
             return selected;
 
         selected = cpuSensors
+            .Where(sensor => sensor.ValueC is not null)
             .OrderByDescending(sensor => sensor.ValueC)
             .Select(sensor => ((TemperatureSensor?)sensor, sensor.Identifier))
             .FirstOrDefault();
@@ -97,5 +124,8 @@ public sealed class TemperatureReader : IDisposable
         return PickSensor(sensors, ["cpu package", "core max", "cpu core", "tctl", "tdie"]);
     }
 
-    private sealed record TemperatureSensor(string Name, string HardwareName, HardwareType HardwareType, string Identifier, double ValueC);
+    private sealed record TemperatureSensor(ISensor Sensor, IHardware Hardware, string Name, string HardwareName, HardwareType HardwareType, string Identifier)
+    {
+        public double? ValueC => Sensor.Value;
+    }
 }
