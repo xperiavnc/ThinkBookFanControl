@@ -12,6 +12,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using System.Globalization;
 using System.ComponentModel;
@@ -32,10 +33,13 @@ public sealed class MainWindow : Window
     private static readonly TimeSpan StoppedFanSnapshotMinInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan IdleSampleMinInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan TrayMenuRefreshMinInterval = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan FanWriteMinInterval = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan FanWriteUrgentMinInterval = TimeSpan.FromMilliseconds(1500);
+    private static readonly TimeSpan FanWriteIncreaseMinInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan FanWriteDecreaseMinInterval = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan FanWriteUrgentMinInterval = TimeSpan.FromMilliseconds(800);
+    private static readonly TimeSpan FanWriteDelayPollInterval = TimeSpan.FromMilliseconds(250);
     private const int FanWriteMinDeltaRpm = 300;
-    private const int FanWriteUrgentDeltaRpm = 800;
+    private const int FanWriteUrgentDeltaRpm = 600;
+    private const int FanControlStepRpm = 100;
 
     private readonly FanController _fanController = new();
     private TemperatureReader? _temperatureReader;
@@ -111,7 +115,6 @@ public sealed class MainWindow : Window
     private bool _closingAfterRestore;
     private bool _exitRestoreInProgress;
     private bool _temperatureSampling;
-    private bool _fanRangeSampling;
     private bool _fanSnapshotSampling;
     private bool _fanWriteInProgress;
     private readonly SemaphoreSlim _fanIoLock = new(1, 1);
@@ -143,6 +146,7 @@ public sealed class MainWindow : Window
         MinWidth = 820;
         MinHeight = 620;
         FontFamily = new FontFamily("Segoe UI");
+        Icon = BitmapFrame.Create(new Uri("pack://application:,,,/Assets/app.ico", UriKind.Absolute));
         _languageCombo.Width = 72;
         _themeCombo.Width = 64;
         _settings = CurveProfileStore.LoadSettings();
@@ -287,14 +291,7 @@ public sealed class MainWindow : Window
         try
         {
             var temps = await Task.Run(ReadTemperatures);
-            if (_running)
-            {
-                if (!_fanRangeDetected)
-                    _ = RefreshFanLimitsAsync();
-                else if (force)
-                    _ = RefreshFanSnapshotAsync(force);
-            }
-            else
+            if (!_running)
             {
                 _ = RefreshFanSnapshotAsync(force);
             }
@@ -372,39 +369,6 @@ public sealed class MainWindow : Window
         }
     }
 
-    private async Task RefreshFanLimitsAsync()
-    {
-        if (_fanRangeDetected || _fanRangeSampling)
-            return;
-
-        _fanRangeSampling = true;
-        try
-        {
-            if (!await _fanIoLock.WaitAsync(0))
-                return;
-
-            IReadOnlyDictionary<string, FanLimit> limits;
-            try
-            {
-                limits = await Task.Run(() => _fanController.ReadLimits());
-            }
-            finally
-            {
-                _fanIoLock.Release();
-            }
-
-            UpdateFanRange(limits);
-        }
-        catch (Exception ex)
-        {
-            _statusText.Text = T("FanReadError") + ": " + ex.GetType().Name + ": " + ex.Message;
-        }
-        finally
-        {
-            _fanRangeSampling = false;
-        }
-    }
-
     private async Task RefreshFanSnapshotAsync(bool force = false)
     {
         if (_fanSnapshotSampling)
@@ -452,7 +416,9 @@ public sealed class MainWindow : Window
 
     private int ClampForCurrentRange(int rpm)
     {
-        return Math.Max(_fanMinRpm, Math.Min(_fanMaxRpm, rpm));
+        var clamped = Math.Max(_fanMinRpm, Math.Min(_fanMaxRpm, rpm));
+        var snapped = (int)Math.Round(clamped / (double)FanControlStepRpm) * FanControlStepRpm;
+        return Math.Max(_fanMinRpm, Math.Min(_fanMaxRpm, snapped));
     }
 
     private void QueueTargetApply(FanTargets target)
@@ -486,20 +452,18 @@ public sealed class MainWindow : Window
             while (_running && _queuedTarget is FanTargets target)
             {
                 _queuedTarget = null;
-                if (_lastFanWriteTime is DateTimeOffset lastFanWriteTime)
-                {
-                    var minInterval = _lastAppliedTarget is FanTargets appliedTarget
-                        ? FanWriteIntervalFor(target, appliedTarget)
-                        : FanWriteMinInterval;
-                    var delay = minInterval - (DateTimeOffset.Now - lastFanWriteTime);
-                    if (delay > TimeSpan.Zero)
-                        await Task.Delay(delay);
-                    if (!_running)
-                        break;
-                }
+                await WaitForFanWriteWindowAsync(target);
+                if (!_running)
+                    break;
 
                 if (_lastTarget is FanTargets latestTarget)
                     target = latestTarget;
+
+                if (_lastAppliedTarget is FanTargets appliedTarget &&
+                    !ShouldQueueFanTarget(target, DateTimeOffset.Now))
+                {
+                    continue;
+                }
 
                 await _fanIoLock.WaitAsync();
                 try
@@ -533,13 +497,31 @@ public sealed class MainWindow : Window
         }
     }
 
+    private async Task WaitForFanWriteWindowAsync(FanTargets queuedTarget)
+    {
+        while (_running &&
+               _lastFanWriteTime is DateTimeOffset lastFanWriteTime &&
+               _lastAppliedTarget is FanTargets appliedTarget)
+        {
+            var target = _lastTarget ?? queuedTarget;
+            var delay = FanWriteIntervalFor(target, appliedTarget) - (DateTimeOffset.Now - lastFanWriteTime);
+            if (delay <= TimeSpan.Zero)
+                return;
+
+            await Task.Delay(delay < FanWriteDelayPollInterval ? delay : FanWriteDelayPollInterval);
+        }
+    }
+
     private static TimeSpan FanWriteIntervalFor(FanTargets target, FanTargets appliedTarget)
     {
         var fan1Increase = target.Fan1Rpm - appliedTarget.Fan1Rpm;
         var fan2Increase = target.Fan2Rpm - appliedTarget.Fan2Rpm;
-        return Math.Max(fan1Increase, fan2Increase) >= FanWriteUrgentDeltaRpm
-            ? FanWriteUrgentMinInterval
-            : FanWriteMinInterval;
+        var maxIncrease = Math.Max(fan1Increase, fan2Increase);
+        if (maxIncrease >= FanWriteUrgentDeltaRpm)
+            return FanWriteUrgentMinInterval;
+        if (maxIncrease >= FanWriteMinDeltaRpm)
+            return FanWriteIncreaseMinInterval;
+        return FanWriteDecreaseMinInterval;
     }
 
     private void InitializeTrayIcon()
@@ -547,7 +529,7 @@ public sealed class MainWindow : Window
         _trayMenu = new Forms.ContextMenuStrip();
         _trayIcon = new Forms.NotifyIcon
         {
-            Icon = Drawing.SystemIcons.Application,
+            Icon = LoadTrayIcon(),
             Visible = true,
             ContextMenuStrip = _trayMenu
         };
@@ -559,6 +541,19 @@ public sealed class MainWindow : Window
         };
         UpdateTrayMenu();
         UpdateTrayText();
+    }
+
+    private static Drawing.Icon LoadTrayIcon()
+    {
+        var processPath = Environment.ProcessPath;
+        if (!string.IsNullOrWhiteSpace(processPath))
+        {
+            var icon = Drawing.Icon.ExtractAssociatedIcon(processPath);
+            if (icon is not null)
+                return icon;
+        }
+
+        return Drawing.SystemIcons.Application;
     }
 
     private Task RefreshTrayMenuAsync()

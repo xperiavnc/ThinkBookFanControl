@@ -10,6 +10,8 @@ public sealed class FanController
     private const string NamespacePath = @"root\wmi";
     private const uint Fan1Id = 0x04030001;
     private const uint Fan2Id = 0x04030002;
+    private static readonly TimeSpan WmiSearchTimeout = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan WmiInvokeTimeout = TimeSpan.FromMilliseconds(700);
     private IReadOnlyDictionary<string, FanLimit>? _cachedLimits;
     private ReadFeatureMode? _readFeatureMode;
     private SetFeatureMode? _setFeatureMode;
@@ -61,7 +63,10 @@ public sealed class FanController
 
     private static ManagementObject FindActiveOtherMethod()
     {
-        using var searcher = new ManagementObjectSearcher(NamespacePath, "SELECT * FROM LENOVO_OTHER_METHOD");
+        using var searcher = new ManagementObjectSearcher(NamespacePath, "SELECT * FROM LENOVO_OTHER_METHOD")
+        {
+            Options = SearchOptions()
+        };
         using var results = searcher.Get();
         foreach (ManagementObject item in results)
         {
@@ -79,7 +84,10 @@ public sealed class FanController
 
     private static IReadOnlyDictionary<string, FanLimit> ReadFanLimits()
     {
-        using var searcher = new ManagementObjectSearcher(NamespacePath, "SELECT * FROM LENOVO_FAN_TEST_DATA");
+        using var searcher = new ManagementObjectSearcher(NamespacePath, "SELECT * FROM LENOVO_FAN_TEST_DATA")
+        {
+            Options = SearchOptions()
+        };
         using var results = searcher.Get();
         foreach (ManagementObject item in results)
         {
@@ -197,7 +205,7 @@ public sealed class FanController
                 {
                     using var inParams = other.GetMethodParameters("GetFeatureValue");
                     SetParameter(inParams, ["Data", "Id", "ID", "FeatureId", "AttributeId"], id);
-                    using var outParams = other.InvokeMethod("GetFeatureValue", inParams, null);
+                    using var outParams = other.InvokeMethod("GetFeatureValue", inParams, InvokeOptions());
                     if (TryGetParameter(outParams, ["value", "Value", "Data"], out var parameterValue))
                     {
                         value = Convert.ToInt32(parameterValue);
@@ -235,7 +243,7 @@ public sealed class FanController
                     {
                         SetParameter(inParams, ["Data", "Id", "ID", "FeatureId", "AttributeId"], id);
                         SetParameter(inParams, ["Value", "value", "Data2"], unchecked((uint)value));
-                        other.InvokeMethod("SetFeatureValue", inParams, null);
+                        other.InvokeMethod("SetFeatureValue", inParams, InvokeOptions());
                     }
                     error = "";
                     return true;
@@ -300,6 +308,23 @@ public sealed class FanController
         return [];
     }
 
+    private static EnumerationOptions SearchOptions()
+    {
+        return new EnumerationOptions
+        {
+            ReturnImmediately = true,
+            Timeout = WmiSearchTimeout
+        };
+    }
+
+    private static InvokeMethodOptions InvokeOptions()
+    {
+        return new InvokeMethodOptions
+        {
+            Timeout = WmiInvokeTimeout
+        };
+    }
+
     private static string DescribeReadMode(ReadFeatureMode mode)
     {
         return mode switch
@@ -323,14 +348,14 @@ public sealed class FanController
 
     private enum ReadFeatureMode
     {
+        Named,
         PositionalOut,
-        PositionalReturn,
-        Named
+        PositionalReturn
     }
 
     private enum SetFeatureMode
     {
-        Positional,
-        Named
+        Named,
+        Positional
     }
 }
