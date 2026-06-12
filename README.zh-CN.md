@@ -2,7 +2,7 @@
 
 面向 Lenovo ThinkBook 16p G6 IAX 的实验性风扇曲线控制工具。
 
-[English README](README.md)
+[English README](README.en.md)
 
 ## 免责声明
 

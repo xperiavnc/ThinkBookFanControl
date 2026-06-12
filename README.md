@@ -1,68 +1,63 @@
-# ThinkBook Fan Control
+# ThinkBook 风扇控制
 
-Experimental fan-curve controller for Lenovo ThinkBook 16p G6 IAX.
+面向 Lenovo ThinkBook 16p G6 IAX 的实验性风扇曲线控制工具。
 
-[中文说明](README.zh-CN.md)
+[English README](README.en.md)
 
-## Disclaimer
+## 免责声明
 
-This project is not affiliated with Lenovo.
-This project is not an official Lenovo project.
-This project is not endorsed, supported, or sponsored by Lenovo.
-This project is an independent experimental tool.
-This tool controls fan speeds through Lenovo WMI interfaces and may affect
-system cooling, hardware stability, hardware lifespan, and data safety.
-Use this project at your own risk; you are solely responsible for any
-consequences arising from its use.
-By using this tool, you acknowledge that you fully understand the risks above
-and voluntarily accept all consequences.
-If you do not agree, stop using and uninstall this tool immediately.
+本项目与联想公司无关。
+本项目不是联想官方项目。
+本项目未获得联想公司的认可、支持或赞助。
+本项目是独立的实验性工具。
+本工具会通过 Lenovo WMI 接口控制风扇转速，可能影响系统散热、硬件稳定性、硬件寿命和数据安全。
+使用本项目需自行承担风险；使用产生的任何后果均由使用者自行负责。
+使用本工具即表示您已充分知悉上述风险并自愿承担全部后果。
+若不同意，请立即停止使用并卸载本工具。
 
-## Project Overview
+## 项目简介
 
-The app is a C# WPF desktop program that reads temperatures through
-LibreHardwareMonitor and controls the two fans through Lenovo WMI methods.
+这是一个 C# WPF 桌面程序。程序通过 LibreHardwareMonitor 读取 CPU、GPU、显存温度，并通过 Lenovo WMI 方法控制两个风扇。
 
-## Current Hardware Interface
+## 当前确认的硬件接口
 
-- WMI namespace: `root\wmi`
-- Method class: `LENOVO_OTHER_METHOD`
-- Fan 1 RPM / target ID: `0x04030001`
-- Fan 2 RPM / target ID: `0x04030002`
-- Auto target value: `0`
-- Fan RPM range source: `LENOVO_FAN_TEST_DATA`
+- WMI 命名空间：`root\wmi`
+- 方法类：`LENOVO_OTHER_METHOD`
+- 风扇 1 RPM / 目标转速 ID：`0x04030001`
+- 风扇 2 RPM / 目标转速 ID：`0x04030002`
+- 恢复自动控制的目标值：`0`
+- 风扇 RPM 范围来源：`LENOVO_FAN_TEST_DATA`
 
-## Features
+## 功能
 
-- CPU/GPU/VRAM temperature display.
-- Fan 1/Fan 2 RPM display.
-- Separate CPU and GPU fan curves.
-- Separate Fan 1 and Fan 2 curves inside each CPU/GPU chart.
-- Optional synchronized point dragging for both fan curves.
-- Five saved profiles.
-- Light/dark theme and Chinese/English UI.
-- Tray menu, close-to-tray, minimize-to-tray, and optional Windows startup.
-- Restores firmware automatic fan control before exit.
+- 显示 CPU/GPU/显存温度。
+- 显示风扇 1/风扇 2 转速。
+- CPU 和 GPU 分别设置风扇曲线。
+- 每个 CPU/GPU 曲线图中分别显示风扇 1 和风扇 2 两条曲线。
+- 可选择当前编辑风扇 1 或风扇 2。
+- 可勾选同步转速，拖动一个风扇曲线点时同步移动另一个风扇的对应点。
+- 支持 5 套配置文件。
+- 支持深色/浅色主题和中文/英文界面。
+- 支持托盘菜单、最小化到托盘、关闭时最小化、开机自启。
+- 退出程序前会先恢复固件自动风扇控制。
 
-## Safety Notes
+## 安全说明
 
-This tool writes directly to Lenovo firmware/WMI fan-control methods. It has
-only been developed against the hardware path above. Use it only with active
-temperature monitoring and verify that `Stop` restores automatic fan control.
+本工具会直接写入 Lenovo 固件/WMI 风扇控制方法。目前仅针对上方硬件接口路径进行开发和测试。使用时请保持温度监控，并确认点击 `Stop` 后能够恢复自动风扇控制。
 
-Administrator permission is required at runtime.
+运行程序需要管理员权限。
 
-## Build
+## 构建
 
-Open PowerShell in the repository root:
+在仓库根目录打开 PowerShell：
 
 ```powershell
 .\scripts\build_csharp.ps1 -Configuration Release -Publish
 ```
 
-The script creates two release folders under `dist`:
+脚本会在 `dist` 下生成两种发布目录：
 
-- `ThinkBookFanControl-win-x64`: self-contained build, no .NET runtime install required.
-- `ThinkBookFanControl-win-x64-net9-runtime`: smaller build, requires .NET 9 Desktop Runtime.
+- `ThinkBookFanControl-win-x64`：自包含版本，不需要目标电脑预装 .NET 运行时。
+- `ThinkBookFanControl-win-x64-net9-runtime`：体积较小，需要目标电脑已安装 .NET 9 Desktop Runtime。
 
-See [BUILDING.md](BUILDING.md) for details.
+更多构建说明见 [BUILDING.md](BUILDING.md)。
